@@ -1,4 +1,5 @@
 #include "LinkedList.h"
+#include "graph.h"
 #include <iostream>
 #include <string>
 using namespace std;
@@ -13,8 +14,8 @@ long long newId() {
 
 class Service {
 private:
-    long long id;       // used as the index in graph
-    string name;        // normal name
+    long long id;       //used as the index in graph
+    string name;        //normal name
     bool affected;      //will be true when affected
 
 public:

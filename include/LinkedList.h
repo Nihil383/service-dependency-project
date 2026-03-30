@@ -11,6 +11,7 @@ private:
     };
     
     Node* head;
+    Node* tail;
     size_t listSize;
     
 public:

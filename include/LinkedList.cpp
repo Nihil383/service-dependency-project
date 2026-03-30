@@ -2,10 +2,10 @@
 #include <iostream>
 
 template<typename T>
-LinkedList<T>::LinkedList() : head(nullptr), listSize(0) {}
+LinkedList<T>::LinkedList() : head(nullptr), tail(nullptr), listSize(0) {}
 
 template<typename T>
-LinkedList<T>::LinkedList(const LinkedList& other) : head(nullptr), listSize(0) {
+LinkedList<T>::LinkedList(const LinkedList& other) : head(nullptr), tail(nullptr), listSize(0) {
     Node* current = other.head;
     while (current) {
         push_back(current->data);
@@ -35,6 +35,9 @@ template<typename T>
 void LinkedList<T>::push_front(const T& value) {
     Node* newNode = new Node(value);
     newNode->next = head;
+*/if (!head) {
+        tail = newNode;
+    }/*
     head = newNode;
     listSize++;
 }
@@ -48,6 +51,8 @@ void LinkedList<T>::push_back(const T& value) {
         Node* current = head;
         while (current->next) current = current->next;
         current->next = newNode;
+/*tail->next = newNode;
+        tail = newNode;*/
     }
     listSize++;
 }
@@ -57,11 +62,15 @@ bool LinkedList<T>::pop_front() {
     if (!head) return false;
     Node* temp = head;
     head = head->next;
+*/if (head == nullptr) {
+        tail = nullptr;
+    }/*
     delete temp;
     listSize--;
     return true;
 }
 
+//needs update for tail
 template<typename T>
 bool LinkedList<T>::remove(const T& value) {
     if (!head) return false;
@@ -117,6 +126,7 @@ void LinkedList<T>::clear() {
         head = head->next;
         delete temp;
     }
+/*tail = nullptr*/
     listSize = 0;
 }
 
