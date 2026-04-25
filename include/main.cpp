@@ -33,6 +33,52 @@ public:
     void setAffected(bool affected) {this->affected = affected;}
 };
 
+
+bool simulateFailure(const string& failedServiceName, LinkedList<int>& affectedIds, LinkedList<int>& traversalOrder) {
+    int failedId = findServiceId(failedServiceName);
+
+    if (failedId == -1) {
+        return false;
+    }
+
+    resetStatuses();
+
+    bool* visited = new bool[capacity + 1];
+    for (int i = 0; i <= capacity; i++) {
+        visited[i] = false;
+    }
+
+    Queue<int> queue;
+    queue.enqueue(failedId);
+    visited[failedId] = true;
+    services[failedId].status = FAILED;
+
+    while (!queue.empty()) {
+        int currentId = queue.front();
+        queue.dequeue();
+        traversalOrder.push_back(currentId);
+
+        LinkedList<int>& dependents = dependencyGraph.getDependents(currentId);
+        for (LinkedList<int>::Iterator it = dependents.begin(); it != dependents.end(); ++it) {
+            int nextId = *it;
+
+            if (!visited[nextId]) {
+                visited[nextId] = true;
+                queue.enqueue(nextId);
+
+                if (nextId != failedId) {
+                    services[nextId].status = AFFECTED;
+                    affectedIds.push_back(nextId);
+                }
+            }
+        }
+    }
+
+    delete[] visited;
+    return true;
+}
+
+
 int main() {
     LinkedList<Service> services;
     
