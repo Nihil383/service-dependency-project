@@ -34,8 +34,6 @@ public:
     ~LinkedList() { clear(); }
     
     // Core functions needed
-    void push_back(const T& value);
-    bool pop_front();
     bool empty() const;
     int size() const;
     void clear();
