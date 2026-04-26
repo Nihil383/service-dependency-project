@@ -3,7 +3,7 @@
 
 #include "LinkedList.h"
 
-template <typename T>
+/*template <typename T>
 void LinkedList<T>::push_back(const T& value) {
     try {
         Node* newNode = new Node(value);
@@ -33,7 +33,7 @@ bool LinkedList<T>::pop_front() {
         return true;
     }
     catch () {
-        throw;}}
+        throw;}}*/
 
 template <typename T>
 bool LinkedList<T>::empty() const {
