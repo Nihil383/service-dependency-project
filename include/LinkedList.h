@@ -2,37 +2,48 @@
 #define LINKEDLIST_H
 
 #include <iostream>
-#include <string>
-
+template <typename T>
 class LinkedList {
 private:
     struct Node {
-        std::string data;
+        T data;
         Node* next;
-        Node(const std::string& value) : data(value), next(nullptr) {}
-    };
-    
+        Node(const T& value) : data(value), next(nullptr) {}};
     Node* head;
     Node* tail;
     int listSize;
-    
 public:
-    LinkedList();
-    ~LinkedList();
+    // Iterator class
+    class Iterator {
+    private:
+        Node* current;
+    public:
+        Iterator(Node* node) : current(node) {}
+        T& operator*() { return current->data; }
+        Iterator& operator++() {
+            if (current) current = current->next;
+            return *this;
+        }
+        bool operator!=(const Iterator& other) const {
+            return current != other.current;
+        }
+    };
     
-    // For Queue operations 
-    void push_back(const std::string& value);
+    // Constructors & Destructor
+    LinkedList() : head(nullptr), tail(nullptr), listSize(0) {}
+    ~LinkedList() { clear(); }
+    
+    // Core functions needed
+    void push_back(const T& value);
     bool pop_front();
     bool empty() const;
-    
-    // For Status tracking
-    bool contains(const std::string& value) const;
-    void remove(const std::string& value);
+    int size() const;
     void clear();
     
-    // Utility
-    int size() const;
-    void print() const;
+    // Iterators
+    Iterator begin() { return Iterator(head); }
+    Iterator end() { return Iterator(nullptr); }
 };
 
+#include "LinkedList.cpp"
 #endif
