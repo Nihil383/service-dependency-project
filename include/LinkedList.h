@@ -39,10 +39,6 @@ public:
     bool empty() const;
     int size() const;
     void clear();
-    
-    // Iterators
-    Iterator begin() { return Iterator(head); }
-    Iterator end() { return Iterator(nullptr); }
 };
 
 #include "LinkedList.cpp"
