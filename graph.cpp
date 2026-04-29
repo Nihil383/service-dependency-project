@@ -1,41 +1,30 @@
 #include "Graph.h"
+#include <iostream>
 
-//parentList takes on an array (size inputted at beginning of program as max) of linked lists
-Graph::Graph(long long max) {
-    n = max + 1; 
-    parentList = new LinkedList<long long>[n]; 
+Graph::Graph(long long maxServices) {
+    // store capacity as max+1 so IDs 1..max are all valid indices
+    capacity = maxServices + 1;
+    adjList = new EdgeList[capacity];
 }
 
-//deconstructor
 Graph::~Graph() {
-    delete[] parentList; 
+    delete[] adjList;
 }
 
-//Simple dependency addition, should be O(1) if push_front adds at tail
-void Graph::addDependency(long long parentId, long long dependentId) {
-    if (parentId >= 0 && parentId < n) {
-        parentList[parentId].push_front(dependentId);
-    }
-}
-//Other dependency addition implementation when input is a list of dependends and a parent (to make it easier to add services)
-void Graph::addDependency(long long parentId, long long* dependentIds, int num) {
-    //nonsense case for parent/ bad array
-    if (parentId < 1 || parentId >= n || dependentIds == nullptr) {
+void Graph::addEdge(long long parentId, long long dependentId, int weight, bool absolute) {
+    // guard against out-of-range IDs
+    if (parentId < 1 || parentId >= capacity) {
+        std::cout << "[Graph] addEdge: parentId " << parentId << " out of range.\n";
         return;
     }
-    //adds all dependends
-    for (int i = 0; i < num; ++i) {
-        //in progress: this can be later further protected if id doesn't match an actual service in use
-        if (dependentIds[i] >= 0 && dependentIds[i] < n) {
-            parentList[parentId].push_front(dependentIds[i]);
-        }
+    if (dependentId < 1 || dependentId >= capacity) {
+        std::cout << "[Graph] addEdge: dependentId " << dependentId << " out of range.\n";
+        return;
     }
+    adjList[parentId].push_front(dependentId, weight, absolute);
 }
 
-// This will later be used to implement the BFS
-LinkedList<long long>& Graph::getDependents(long long id) {
-    if (id >= 0 && id < n) {
-        return parentList[id];
-    }
-//this needs an error or so
+EdgeList& Graph::getDependents(long long id) {
+    // caller is responsible for checking bounds before calling
+    return adjList[id];
 }
