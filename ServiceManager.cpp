@@ -122,28 +122,12 @@ int ServiceManager::evaluateService(long long id) {
     return STATUS_NORMAL;
 }
 
-//simulate failure
-void ServiceManager::simulateFailure(long long failedId) {
-    if (!isValidId(failedId)) {
-        std::cout << "[simulateFailure] Invalid service ID: " << failedId << "\n";
-        return;
-    }
-
-    std::cout << "\n=== Simulating failure of ["
-              << failedId << "] " << services[failedId].getName() << " ===\n";
-
-    //phase 1
-    IDQueue failQueue;
-
-    // force the root service to fully failed
-    setServiceStatus(failedId, STATUS_FAILED);
-    if (services[failedId].getTotalWeight() > 0) {
-        float needed = (float)services[failedId].getTotalWeight() - services[failedId].getTotalFailedWeight();
-        if (needed > 0.0f) services[failedId].addFailedWeight(needed);
-    }
-    failedSet.insert(failedId);
-    failQueue.enqueue(failedId);
-
+/*runPhase1 - failure-only BFS
+Drains failQueue, walking outgoing edges of each failed node.
+Absolute edges only fire if the current node is fully FAILED.
+Affected nodes accumulate weight but stay out of the queue —
+phase 2 handles them after this settles.*/
+void ServiceManager::runPhase1(IDQueue& failQueue) {
     while (!failQueue.empty()) {
         long long currentId = failQueue.front();
         failQueue.dequeue();
@@ -154,18 +138,19 @@ void ServiceManager::simulateFailure(long long failedId) {
         while (edge) {
             long long depId = edge->dependentId;
 
-            // skip services already fully processed as failed
+            // already fully processed as a failure source - skip
             if (failedSet.contains(depId)) {
                 edge = edge->next;
                 continue;
             }
 
             if (edge->absolute) {
-                // absolute edge: only fire if the PARENT is fully failed, affected state does not trigger this
+                // only fire if parent is fully failed, not merely affected
                 if (services[currentId].getStatus() == STATUS_FAILED) {
                     Service& dep = services[depId];
                     setServiceStatus(depId, STATUS_FAILED);
-                    float needed = (float)dep.getTotalWeight() - dep.getTotalFailedWeight();
+                    float needed = (float)dep.getTotalWeight()
+                                   - dep.getTotalFailedWeight();
                     if (needed > 0.0f) dep.addFailedWeight(needed);
                     failedSet.insert(depId);
                     failQueue.enqueue(depId);
@@ -173,7 +158,6 @@ void ServiceManager::simulateFailure(long long failedId) {
                               << " (ID " << depId << ") -> FAILED\n";
                 }
             } else {
-                // weight-based: push delta weight, check threshold
                 propagateWeightToDependent(currentId, depId, edge->weight);
                 int newStatus = evaluateService(depId);
 
@@ -191,8 +175,6 @@ void ServiceManager::simulateFailure(long long failedId) {
                               << "% >= " << failureThreshold << "%)\n";
 
                 } else if (newStatus == STATUS_AFFECTED) {
-                    // accumulate weight but don't enqueue yet -
-                    // phase 2 will handle propagation from affected nodes
                     setServiceStatus(depId, STATUS_AFFECTED);
                     std::cout << "  " << services[depId].getName()
                               << " (ID " << depId << ") -> AFFECTED ("
@@ -204,129 +186,128 @@ void ServiceManager::simulateFailure(long long failedId) {
             edge = edge->next;
         }
 
-        // update historicRatio so future delta pushes from this node
-        // only send the new portion
         services[currentId].updateHistoricRatio();
     }
+}
 
-    // -----------------------------------------------------------------------
-    // PHASE 2 - walk affected nodes and push their partial weight forward
-    //
-    // We snapshot the affected list before iterating because processing an
-    // affected node may add new entries to affectedList (if a dependent
-    // tips from normal to affected). We only process nodes that were
-    // affected at the END of phase 1, not new ones discovered here.
-    // -----------------------------------------------------------------------
-    std::cout << "  [Phase 2] Propagating affected node weights...\n";
+/*
+runPhase2 - affected node propagation with cascade handling
+Takes a snapshot of the current affectedList so we iterate a fixed set.
+For each affected node, pushes partial weight to its dependents.
+If a dependent tips over the threshold:
+- marks it failed, runs phase1 on it (which may produce new affected nodes)
+- sets newFailuresFound = true so we loop again with a fresh snapshot
+Keeps looping until a full pass produces zero new failures.
+Convergence guaranteed: each iteration strictly increases the failed count,
+which is bounded by V. So at most V iterations total.
+*/
+void ServiceManager::runPhase2() {
+    bool newFailuresFound = true;
 
-    // collect the current affected IDs into a temporary queue
-    // so we iterate a fixed snapshot, not a live list
-    IDQueue affectedSnapshot;
-    IDListNode* curr = affectedList.getHead();
-    while (curr) {
-        affectedSnapshot.enqueue(curr->id);
-        curr = curr->next;
-    }
+    while (newFailuresFound) {
+        newFailuresFound = false;
 
-    while (!affectedSnapshot.empty()) {
-        long long affId = affectedSnapshot.front();
-        affectedSnapshot.dequeue();
+        std::cout << "  [Phase 2] Propagating affected node weights...\n";
 
-        // only process if still affected (phase-1 sub-cascades may have
-        // already failed this node)
-        if (services[affId].getStatus() != STATUS_AFFECTED) continue;
-
-        EdgeList& edges = graph.getDependents(affId);
-        EdgeNode* edge  = edges.getHead();
-
-        while (edge) {
-            long long depId = edge->dependentId;
-
-            if (failedSet.contains(depId)) {
-                edge = edge->next;
-                continue;
-            }
-
-            // absolute edges from affected parents do NOT fire -
-            // they only fire when the parent is fully failed (phase 1)
-            if (!edge->absolute) {
-                propagateWeightToDependent(affId, depId, edge->weight);
-                int newStatus = evaluateService(depId);
-
-                if (newStatus == STATUS_FAILED) {
-                    // this affected node's weight tipped a dependent over -
-                    // treat it as a new phase-1 failure cascade
-                    Service& dep = services[depId];
-                    setServiceStatus(depId, STATUS_FAILED);
-                    float needed = (float)dep.getTotalWeight()
-                                   - dep.getTotalFailedWeight();
-                    if (needed > 0.0f) dep.addFailedWeight(needed);
-                    failedSet.insert(depId);
-
-                    // mini phase-1 for the newly failed node
-                    IDQueue miniQueue;
-                    miniQueue.enqueue(depId);
-                    while (!miniQueue.empty()) {
-                        long long mId = miniQueue.front();
-                        miniQueue.dequeue();
-                        EdgeList& mEdges = graph.getDependents(mId);
-                        EdgeNode* mEdge  = mEdges.getHead();
-                        while (mEdge) {
-                            long long mDepId = mEdge->dependentId;
-                            if (!failedSet.contains(mDepId)) {
-                                if (mEdge->absolute) {
-                                    Service& mDep = services[mDepId];
-                                    setServiceStatus(mDepId, STATUS_FAILED);
-                                    float n = (float)mDep.getTotalWeight()
-                                              - mDep.getTotalFailedWeight();
-                                    if (n > 0.0f) mDep.addFailedWeight(n);
-                                    failedSet.insert(mDepId);
-                                    miniQueue.enqueue(mDepId);
-                                } else {
-                                    propagateWeightToDependent(mId, mDepId,
-                                                               mEdge->weight);
-                                    int ms = evaluateService(mDepId);
-                                    if (ms == STATUS_FAILED) {
-                                        Service& mDep = services[mDepId];
-                                        setServiceStatus(mDepId, STATUS_FAILED);
-                                        float n = (float)mDep.getTotalWeight()
-                                                  - mDep.getTotalFailedWeight();
-                                        if (n > 0.0f) mDep.addFailedWeight(n);
-                                        failedSet.insert(mDepId);
-                                        miniQueue.enqueue(mDepId);
-                                    } else if (ms == STATUS_AFFECTED) {
-                                        setServiceStatus(mDepId, STATUS_AFFECTED);
-                                    }
-                                }
-                            }
-                            mEdge = mEdge->next;
-                        }
-                        services[mId].updateHistoricRatio();
-                    }
-
-                    std::cout << "  [P2] " << dep.getName()
-                              << " (ID " << depId << ") -> FAILED\n";
-
-                } else if (newStatus == STATUS_AFFECTED &&
-                           services[depId].getStatus() != STATUS_AFFECTED) {
-                    setServiceStatus(depId, STATUS_AFFECTED);
-                    std::cout << "  [P2] " << services[depId].getName()
-                              << " (ID " << depId << ") -> AFFECTED\n";
-                }
-            }
-
-            edge = edge->next;
+        // snapshot the current affected list so new entries added during
+        // this pass don't get processed mid-iteration
+        IDQueue snapshot;
+        IDListNode* curr = affectedList.getHead();
+        while (curr) {
+            snapshot.enqueue(curr->id);
+            curr = curr->next;
         }
 
-        services[affId].updateHistoricRatio();
+        while (!snapshot.empty()) {
+            long long affId = snapshot.front();
+            snapshot.dequeue();
+
+            // may have been failed by a cascade earlier in this same pass
+            if (services[affId].getStatus() != STATUS_AFFECTED) continue;
+
+            EdgeList& edges = graph.getDependents(affId);
+            EdgeNode* edge  = edges.getHead();
+
+            while (edge) {
+                long long depId = edge->dependentId;
+
+                if (failedSet.contains(depId)) {
+                    edge = edge->next;
+                    continue;
+                }
+
+                // absolute edges from affected parents never fire here
+                if (!edge->absolute) {
+                    propagateWeightToDependent(affId, depId, edge->weight);
+                    int newStatus = evaluateService(depId);
+
+                    if (newStatus == STATUS_FAILED) {
+                        Service& dep = services[depId];
+                        setServiceStatus(depId, STATUS_FAILED);
+                        float needed = (float)dep.getTotalWeight()
+                                       - dep.getTotalFailedWeight();
+                        if (needed > 0.0f) dep.addFailedWeight(needed);
+                        failedSet.insert(depId);
+
+                        // recursively run phase 1 for this new failure -
+                        // it may produce more affected nodes which will be
+                        // caught in the next outer loop iteration
+                        IDQueue newFailQueue;
+                        newFailQueue.enqueue(depId);
+                        runPhase1(newFailQueue);
+
+                        newFailuresFound = true; // trigger another phase 2 pass
+                        std::cout << "  [P2] " << dep.getName()
+                                  << " (ID " << depId << ") -> FAILED\n";
+
+                    } else if (newStatus == STATUS_AFFECTED &&
+                               services[depId].getStatus() != STATUS_AFFECTED) {
+                        setServiceStatus(depId, STATUS_AFFECTED);
+                        std::cout << "  [P2] " << services[depId].getName()
+                                  << " (ID " << depId << ") -> AFFECTED\n";
+                    }
+                }
+
+                edge = edge->next;
+            }
+
+            services[affId].updateHistoricRatio();
+        }
     }
+}
+
+// simulateFailure - entry point
+// Sets up the root failure and hands off to the two phases.
+void ServiceManager::simulateFailure(long long failedId) {
+    if (!isValidId(failedId)) {
+        std::cout << "[simulateFailure] Invalid service ID: " << failedId << "\n";
+        return;
+    }
+
+    std::cout << "\n=== Simulating failure of ["
+              << failedId << "] " << services[failedId].getName() << " ===\n";
+
+    // force root to fully failed
+    setServiceStatus(failedId, STATUS_FAILED);
+    if (services[failedId].getTotalWeight() > 0) {
+        float needed = (float)services[failedId].getTotalWeight()
+        - services[failedId].getTotalFailedWeight();
+        if (needed > 0.0f) services[failedId].addFailedWeight(needed);
+    }
+    failedSet.insert(failedId);
+
+    // phase 1 - propagate the initial failure wave
+    IDQueue failQueue;
+    failQueue.enqueue(failedId);
+    runPhase1(failQueue);
+
+    // phase 2 - propagate affected nodes, looping until stable
+    runPhase2();
 
     std::cout << "=== Simulation complete ===\n\n";
 }
 
-// =============================================================================
 // resetSimulation - O(V) pass restores everything and rebuilds status lists
-// =============================================================================
 void ServiceManager::resetSimulation() {
     normalList.clear();
     affectedList.clear();
@@ -341,18 +322,14 @@ void ServiceManager::resetSimulation() {
     std::cout << "[Reset] All services restored to NORMAL.\n";
 }
 
-// =============================================================================
 // searchByName
-// =============================================================================
 long long ServiceManager::searchByName(const std::string& name) const {
     long long id;
     if (!nameToId.get(name, id)) return -1;
     return id;
 }
 
-// =============================================================================
 // isValidId
-// =============================================================================
 bool ServiceManager::isValidId(long long id) const {
     return (id >= 1 && id <= serviceCount);
 }

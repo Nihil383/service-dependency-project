@@ -54,15 +54,17 @@ public:
     bool addEdge(long long parentId, long long dependentId,
                  int weight, bool absolute);
 
-    /*simulateFailure - two-phase BFS
-    PHASE 1 - failure propagation:
-    Process only definitively FAILED nodes (absolute edges or ratio >= threshold). Affected nodes
-    accumulate weight but are NOT enqueued. Each node is processed at most once. Bounded by O(V+E).
-    PHASE 2 - affected propagation:
-    After phase 1 settles, walk affectedList once. For each affected node, push its partial weight forward.
-    If any dependent tips over the threshold, treat it as a new failure and re-enter phase 1 for
-    that sub-cascade. Each node can enter phase 2 at most once.*/
+    //see phase 1 & 2, this a mainly a wrapper for them
     void simulateFailure(long long failedId);
+    // runPhase1 - drains a queue of failed service IDs, propagating failures
+    // outward. Absolute edges only fire from fully failed parents.
+    // Affected nodes accumulate weight but are not enqueued here.
+    void runPhase1(IDQueue& failQueue);
+    // runPhase2 - walks a snapshot of the current affectedList and pushes
+    // partial weight forward. If any dependent tips over the threshold,
+    // calls runPhase1 for that new failure, then loops again until a full
+    // pass produces no new failures.
+    void runPhase2();
 
     // resetSimulation - restores all services to NORMAL in one O(V) pass
     void resetSimulation();
