@@ -55,16 +55,20 @@ public:
                  int weight, bool absolute);
 
     //see phase 1 & 2, this a mainly a wrapper for them
-    void simulateFailure(long long failedId);
-    // runPhase1 - drains a queue of failed service IDs, propagating failures
-    // outward. Absolute edges only fire from fully failed parents.
-    // Affected nodes accumulate weight but are not enqueued here.
-    void runPhase1(IDQueue& failQueue);
-    // runPhase2 - walks a snapshot of the current affectedList and pushes
-    // partial weight forward. If any dependent tips over the threshold,
-    // calls runPhase1 for that new failure, then loops again until a full
-    // pass produces no new failures.
-    void runPhase2();
+ void simulateFailure(long long failedId);
+
+// runPhase1 - drains a queue of failed service IDs and propagates failures outward.
+// Newly affected services are added to affectedQueue instead of waiting for a full
+// affectedList rescan.
+void runPhase1(IDQueue& failQueue, IDQueue& affectedQueue);
+
+// runPhase2 - processes only affected services waiting in affectedQueue.
+// If an affected service causes another service to fail, that failed service is
+// added to failQueue and handled by runPhase1.
+void runPhase2(IDQueue& failQueue, IDQueue& affectedQueue);
+
+// resetSimulation - restores all services to NORMAL in one O(V) pass
+void resetSimulation();
 
     // resetSimulation - restores all services to NORMAL in one O(V) pass
     void resetSimulation();
