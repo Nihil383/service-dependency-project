@@ -70,9 +70,7 @@ void runPhase2(IDQueue& failQueue, IDQueue& affectedQueue);
 // resetSimulation - restores all services to NORMAL in one O(V) pass
 void resetSimulation();
 
-    // resetSimulation - restores all services to NORMAL in one O(V) pass
-    void resetSimulation();
-
+  
     // searchByName - look up a service by name, returns its ID or -1
     long long searchByName(const std::string& name) const;
 
