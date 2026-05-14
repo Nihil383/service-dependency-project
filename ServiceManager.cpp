@@ -127,7 +127,7 @@ Drains failQueue, walking outgoing edges of each failed node.
 Absolute edges only fire if the current node is fully FAILED.
 Affected nodes accumulate weight but stay out of the queue —
 phase 2 handles them after this settles.*/
-void ServiceManager::runPhase1(IDQueue& failQueue) {
+void ServiceManager::runPhase1(IDQueue& failQueue, IDQueue& affectedQueue) {
     while (!failQueue.empty()) {
         long long currentId = failQueue.front();
         failQueue.dequeue();
@@ -138,22 +138,26 @@ void ServiceManager::runPhase1(IDQueue& failQueue) {
         while (edge) {
             long long depId = edge->dependentId;
 
-            // already fully processed as a failure source - skip
             if (failedSet.contains(depId)) {
                 edge = edge->next;
                 continue;
             }
 
             if (edge->absolute) {
-                // only fire if parent is fully failed, not merely affected
                 if (services[currentId].getStatus() == STATUS_FAILED) {
                     Service& dep = services[depId];
+
                     setServiceStatus(depId, STATUS_FAILED);
+
                     float needed = (float)dep.getTotalWeight()
                                    - dep.getTotalFailedWeight();
-                    if (needed > 0.0f) dep.addFailedWeight(needed);
+                    if (needed > 0.0f) {
+                        dep.addFailedWeight(needed);
+                    }
+
                     failedSet.insert(depId);
                     failQueue.enqueue(depId);
+
                     std::cout << "  [ABSOLUTE] " << dep.getName()
                               << " (ID " << depId << ") -> FAILED\n";
                 }
@@ -163,23 +167,33 @@ void ServiceManager::runPhase1(IDQueue& failQueue) {
 
                 if (newStatus == STATUS_FAILED) {
                     Service& dep = services[depId];
+
                     setServiceStatus(depId, STATUS_FAILED);
+
                     float needed = (float)dep.getTotalWeight()
                                    - dep.getTotalFailedWeight();
-                    if (needed > 0.0f) dep.addFailedWeight(needed);
+                    if (needed > 0.0f) {
+                        dep.addFailedWeight(needed);
+                    }
+
                     failedSet.insert(depId);
                     failQueue.enqueue(depId);
+
                     std::cout << "  " << dep.getName()
                               << " (ID " << depId << ") -> FAILED ("
-                              << (int)(dep.failRatio()*100+0.5f)
+                              << (int)(dep.failRatio() * 100 + 0.5f)
                               << "% >= " << failureThreshold << "%)\n";
 
                 } else if (newStatus == STATUS_AFFECTED) {
-                    setServiceStatus(depId, STATUS_AFFECTED);
-                    std::cout << "  " << services[depId].getName()
-                              << " (ID " << depId << ") -> AFFECTED ("
-                              << (int)(services[depId].failRatio()*100+0.5f)
-                              << "% < " << failureThreshold << "%)\n";
+                    if (services[depId].getStatus() != STATUS_AFFECTED) {
+                        setServiceStatus(depId, STATUS_AFFECTED);
+                        affectedQueue.enqueue(depId);
+
+                        std::cout << "  " << services[depId].getName()
+                                  << " (ID " << depId << ") -> AFFECTED ("
+                                  << (int)(services[depId].failRatio() * 100 + 0.5f)
+                                  << "% < " << failureThreshold << "%)\n";
+                    }
                 }
             }
 
