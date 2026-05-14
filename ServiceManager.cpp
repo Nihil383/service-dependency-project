@@ -1,242 +1,342 @@
 #include "ServiceManager.h"
 #include <iostream>
 
-// =============================================================================
-// Constructor / Destructor
-// =============================================================================
-
-ServiceManager::ServiceManager(long long max, int threshold, int mode)
-    : graph(max), maxServices(max), serviceCount(0),
-      failureThreshold(threshold), affectMode(mode) {
-    // allocate service array; index 0 is unused (IDs start at 1)
-    services = new Service[max + 1];
+ServiceManager::ServiceManager(int threshold, int mode)
+    : serviceCapacity(16), serviceCount(0),
+      failureThreshold(threshold), affectMode(mode)
+{
+    // start with 15 slots (index 0 unused)
+    services = new Service[serviceCapacity];
 }
 
 ServiceManager::~ServiceManager() {
     delete[] services;
 }
 
-// =============================================================================
-// addService
-// =============================================================================
+// growServices - vector doubling operation
+void ServiceManager::growServices() {
+    long long newCap = serviceCapacity * 2;
+    Service* newArr  = new Service[newCap];
+    for (long long i = 0; i <= serviceCount; i++) {
+        newArr[i] = services[i];
+    }
+    delete[] services;
+    services         = newArr;
+    serviceCapacity  = newCap;
+}
 
+// setServiceStatus
+// Moves the service ID between the three status lists AND updates the field.
+// All status changes everywhere must go through this so the lists stay correct.
+void ServiceManager::setServiceStatus(long long id, int newStatus) {
+    int oldStatus = services[id].getStatus();
+    if (oldStatus == newStatus) return;
+
+    // remove from current list
+    if      (oldStatus == STATUS_NORMAL)   normalList.remove(id);
+    else if (oldStatus == STATUS_AFFECTED) affectedList.remove(id);
+    else                                   failedList.remove(id);
+
+    // insert into new list
+    if      (newStatus == STATUS_NORMAL)   normalList.pushFront(id);
+    else if (newStatus == STATUS_AFFECTED) affectedList.pushFront(id);
+    else                                   failedList.pushFront(id);
+
+    services[id].setStatus(newStatus);
+}
+
+//addService
 long long ServiceManager::addService(const std::string& name) {
-    if (serviceCount >= maxServices) {
-        std::cout << "[ServiceManager] Cannot add service '" << name
-                  << "': at capacity (" << maxServices << ").\n";
-        return -1;
+    // grow if needed (serviceCount+1 because index 0 is unused)
+    if (serviceCount + 1 >= serviceCapacity) {
+        growServices();
     }
 
     long long id = ++serviceCount;
+
+    // register a slot in the graph's adjacency list
+    graph.registerService();
+
+    // construct the service object
     services[id] = Service(id, name);
 
-    // register in name→id map for search
+    // all new services start NORMAL
+    normalList.pushFront(id);
+
+    // register in name->id map for search
     nameToId.put(name, id);
 
     std::cout << "  Added service '" << name << "' with ID " << id << "\n";
     return id;
 }
 
-// =============================================================================
-// addEdge
-// =============================================================================
-
-void ServiceManager::addEdge(long long parentId, long long dependentId,
-                              int weight, bool absolute) {
+//addEdge
+bool ServiceManager::addEdge(long long parentId, long long dependentId, int weight, bool absolute) {
     if (!isValidId(parentId) || !isValidId(dependentId)) {
         std::cout << "[ServiceManager] addEdge: invalid ID(s) "
-                  << parentId << " - " << dependentId << "\n";
-        return;
+                  << parentId << " -> " << dependentId << "\n";
+        return false;
     }
 
-    // The edge goes parent → dependent in the graph
-    // (if parent fails, dependent is impacted)
-    graph.addEdge(parentId, dependentId, weight, absolute);
+    // graph.addEdge does the duplicate check and returns false if it exists
+    if (!graph.addEdge(parentId, dependentId, weight, absolute)) {
+        return false;
+    }
 
-    // The dependent's totalWeight grows because it now has one more incoming
-    // dependency weight to account for in its fail ratio
     services[dependentId].addIncomingWeight(weight);
+    return true;
 }
 
-// =============================================================================
-// propagateWeightToDependent — delta weight push
-// =============================================================================
 
-void ServiceManager::propagateWeightToDependent(long long parentId,
-                                                 long long dependentId,
-                                                 int edgeWeight, bool /*absolute*/) {
+// propagateWeightToDependent - delta pushes since last processed
+// Only pushes the NEW portion of weight since last time this parent
+// propagated, so re-processing an affected parent doesn't double-count.
+void ServiceManager::propagateWeightToDependent(long long parentId, long long dependentId, int edgeWeight) {
     Service& parent    = services[parentId];
     Service& dependent = services[dependentId];
 
     float parentRatio = parent.failRatio();
-
-    // If parent has no dependencies itself (ratio == -1), treat as fully failed
-    // (it was explicitly failed via simulateFailure, so ratio should be 1.0
-    //  but we guard just in case)
+    // if parent has no dependencies of its own, treat it as fully failed
     if (parentRatio < 0.0f) parentRatio = 1.0f;
 
-    float historicRatio = parent.getHistoricRatio();
+    float delta = parentRatio - parent.getHistoricRatio();
+    if (delta <= 0.0f) return; // nothing new to push
 
     if (affectMode == 0) {
-        // --- Naive mode ---
-        // Push full edge weight regardless of parent's ratio.
-        // But still use the delta so we don't double-count if this parent
-        // was already partially processed in an earlier simulation step.
-        float delta = (parentRatio - historicRatio);
-        if (delta <= 0.0f) return; // nothing new to push
-        dependent.addFailedWeight((float)edgeWeight * delta);
-
+        // naive: push full edge weight regardless of parent's partial ratio
+        dependent.addFailedWeight((float)edgeWeight);
     } else {
-        // --- Weighted mode ---
-        // Push (currentRatio - historicRatio) * edgeWeight
-        // This means an "affected" parent only partially loads the dependent,
-        // proportional to how failed the parent actually is.
-        float delta = parentRatio - historicRatio;
-        if (delta <= 0.0f) return;
+        // weighted: push proportionally to how failed the parent actually is
         dependent.addFailedWeight((float)edgeWeight * delta);
     }
 }
 
-// =============================================================================
-// evaluateService — compare ratio to threshold, set status
-// =============================================================================
+// evaluateService - check ratio against threshold, return new status
+int ServiceManager::evaluateService(long long id) {
+    float ratio = services[id].failRatio();
+    if (ratio < 0.0f) return STATUS_NORMAL; // no dependencies, immune
 
-void ServiceManager::evaluateService(long long id) {
-    Service& svc = services[id];
-
-    float ratio = svc.failRatio();
-
-    // Services with no dependencies are immune to propagation
-    // (they can only be failed explicitly)
-    if (ratio < 0.0f) return;
-
-    int pct = (int)(ratio * 100.0f + 0.5f); // round to nearest percent
-
-    if (pct >= failureThreshold) {
-        svc.setStatus(STATUS_FAILED);
-    } else if (pct > 0) {
-        svc.setStatus(STATUS_AFFECTED);
-    }
-    // else stays NORMAL
+    int pct = (int)(ratio * 100.0f + 0.5f);
+    if (pct >= failureThreshold) return STATUS_FAILED;
+    if (pct > 0)                 return STATUS_AFFECTED;
+    return STATUS_NORMAL;
 }
 
-// =============================================================================
-// simulateFailure — BFS
-// =============================================================================
-
+//simulate failure
 void ServiceManager::simulateFailure(long long failedId) {
     if (!isValidId(failedId)) {
         std::cout << "[simulateFailure] Invalid service ID: " << failedId << "\n";
         return;
     }
 
-    std::cout << "\n=== Simulating failure of service ["
+    std::cout << "\n=== Simulating failure of ["
               << failedId << "] " << services[failedId].getName() << " ===\n";
 
-    // --- Step 1: mark the root as failed ---
-    services[failedId].setStatus(STATUS_FAILED);
-    // A directly failed service has 100% of its own weight failed.
-    // We represent this by setting totalFailedWeight = totalWeight.
-    // But if it has no dependencies (self-reliant), ratio stays -1 and
-    // we still propagate it as a hard failure to dependents.
+    //phase 1
+    IDQueue failQueue;
+
+    // force the root service to fully failed
+    setServiceStatus(failedId, STATUS_FAILED);
     if (services[failedId].getTotalWeight() > 0) {
-        // Force ratio to 1.0 by adding the full weight
-        float needed = (float)services[failedId].getTotalWeight()
-                       - services[failedId].getTotalFailedWeight();
+        float needed = (float)services[failedId].getTotalWeight() - services[failedId].getTotalFailedWeight();
         if (needed > 0.0f) services[failedId].addFailedWeight(needed);
     }
-
-    // Add to failed set so we won't re-process it
     failedSet.insert(failedId);
+    failQueue.enqueue(failedId);
 
-    IDQueue queue;
-    queue.enqueue(failedId);
+    while (!failQueue.empty()) {
+        long long currentId = failQueue.front();
+        failQueue.dequeue();
 
-    while (!queue.empty()) {
-        long long currentId = queue.front();
-        queue.dequeue();
-
-        // Walk every dependent of currentId
         EdgeList& edges = graph.getDependents(currentId);
         EdgeNode* edge  = edges.getHead();
 
-        while (edge != nullptr) {
+        while (edge) {
             long long depId = edge->dependentId;
 
-            // --- a. Already fully failed and processed → skip ---
+            // skip services already fully processed as failed
             if (failedSet.contains(depId)) {
                 edge = edge->next;
                 continue;
             }
 
-            // --- b. Absolute edge → immediate failure, no ratio math ---
             if (edge->absolute) {
-                Service& dep = services[depId];
-                dep.setStatus(STATUS_FAILED);
-
-                // force weight to full so ratio is 1.0 for downstream
-                float needed = (float)dep.getTotalWeight() - dep.getTotalFailedWeight();
-                if (needed > 0.0f) dep.addFailedWeight(needed);
-
-                failedSet.insert(depId); //insert to hash and skip
-                queue.enqueue(depId);
-
-                std::cout << "  [ABSOLUTE] " << dep.getName()
-                          << " (ID " << depId << ")  FAILED\n";
-
-            } else {
-                // --- c. Weight-based propagation ---
-                propagateWeightToDependent(currentId, depId,
-                                           edge->weight, edge->absolute);
-                evaluateService(depId);
-
-                Service& dep = services[depId];
-
-                if (dep.getStatus() == STATUS_FAILED) {
-                    // force weight full so it propagates at 1.0 downstream
+                // absolute edge: only fire if the PARENT is fully failed, affected state does not trigger this
+                if (services[currentId].getStatus() == STATUS_FAILED) {
+                    Service& dep = services[depId];
+                    setServiceStatus(depId, STATUS_FAILED);
                     float needed = (float)dep.getTotalWeight() - dep.getTotalFailedWeight();
                     if (needed > 0.0f) dep.addFailedWeight(needed);
+                    failedSet.insert(depId);
+                    failQueue.enqueue(depId);
+                    std::cout << "  [ABSOLUTE] " << dep.getName()
+                              << " (ID " << depId << ") -> FAILED\n";
+                }
+            } else {
+                // weight-based: push delta weight, check threshold
+                propagateWeightToDependent(currentId, depId, edge->weight);
+                int newStatus = evaluateService(depId);
 
-                    failedSet.insert(depId); //insert to hash and skip
-                    queue.enqueue(depId);
-
+                if (newStatus == STATUS_FAILED) {
+                    Service& dep = services[depId];
+                    setServiceStatus(depId, STATUS_FAILED);
+                    float needed = (float)dep.getTotalWeight()
+                                   - dep.getTotalFailedWeight();
+                    if (needed > 0.0f) dep.addFailedWeight(needed);
+                    failedSet.insert(depId);
+                    failQueue.enqueue(depId);
                     std::cout << "  " << dep.getName()
-                              << " (ID " << depId << ")  FAILED ("
-                              << (int)(dep.failRatio()*100+0.5f) << "% >= "
-                              << failureThreshold << "% threshold)\n";
+                              << " (ID " << depId << ") -> FAILED ("
+                              << (int)(dep.failRatio()*100+0.5f)
+                              << "% >= " << failureThreshold << "%)\n";
 
-                } else if (dep.getStatus() == STATUS_AFFECTED) {
-                    // Enqueue affected services too so they can propagate
-                    // their partial weight to their own dependents
-                    queue.enqueue(depId);
-
-                    std::cout << "  " << dep.getName()
-                              << " (ID " << depId << ")  AFFECTED ("
-                              << (int)(dep.failRatio()*100+0.5f) << "% < "
-                              << failureThreshold << "% threshold)\n";
+                } else if (newStatus == STATUS_AFFECTED) {
+                    // accumulate weight but don't enqueue yet -
+                    // phase 2 will handle propagation from affected nodes
+                    setServiceStatus(depId, STATUS_AFFECTED);
+                    std::cout << "  " << services[depId].getName()
+                              << " (ID " << depId << ") -> AFFECTED ("
+                              << (int)(services[depId].failRatio()*100+0.5f)
+                              << "% < " << failureThreshold << "%)\n";
                 }
             }
 
             edge = edge->next;
         }
 
-        // --- Step 5: after processing all of currentId's dependents,
-        //     update its historicRatio so future propagations from this
-        //     node only push the delta ---
+        // update historicRatio so future delta pushes from this node
+        // only send the new portion
         services[currentId].updateHistoricRatio();
+    }
+
+    // -----------------------------------------------------------------------
+    // PHASE 2 - walk affected nodes and push their partial weight forward
+    //
+    // We snapshot the affected list before iterating because processing an
+    // affected node may add new entries to affectedList (if a dependent
+    // tips from normal to affected). We only process nodes that were
+    // affected at the END of phase 1, not new ones discovered here.
+    // -----------------------------------------------------------------------
+    std::cout << "  [Phase 2] Propagating affected node weights...\n";
+
+    // collect the current affected IDs into a temporary queue
+    // so we iterate a fixed snapshot, not a live list
+    IDQueue affectedSnapshot;
+    IDListNode* curr = affectedList.getHead();
+    while (curr) {
+        affectedSnapshot.enqueue(curr->id);
+        curr = curr->next;
+    }
+
+    while (!affectedSnapshot.empty()) {
+        long long affId = affectedSnapshot.front();
+        affectedSnapshot.dequeue();
+
+        // only process if still affected (phase-1 sub-cascades may have
+        // already failed this node)
+        if (services[affId].getStatus() != STATUS_AFFECTED) continue;
+
+        EdgeList& edges = graph.getDependents(affId);
+        EdgeNode* edge  = edges.getHead();
+
+        while (edge) {
+            long long depId = edge->dependentId;
+
+            if (failedSet.contains(depId)) {
+                edge = edge->next;
+                continue;
+            }
+
+            // absolute edges from affected parents do NOT fire -
+            // they only fire when the parent is fully failed (phase 1)
+            if (!edge->absolute) {
+                propagateWeightToDependent(affId, depId, edge->weight);
+                int newStatus = evaluateService(depId);
+
+                if (newStatus == STATUS_FAILED) {
+                    // this affected node's weight tipped a dependent over -
+                    // treat it as a new phase-1 failure cascade
+                    Service& dep = services[depId];
+                    setServiceStatus(depId, STATUS_FAILED);
+                    float needed = (float)dep.getTotalWeight()
+                                   - dep.getTotalFailedWeight();
+                    if (needed > 0.0f) dep.addFailedWeight(needed);
+                    failedSet.insert(depId);
+
+                    // mini phase-1 for the newly failed node
+                    IDQueue miniQueue;
+                    miniQueue.enqueue(depId);
+                    while (!miniQueue.empty()) {
+                        long long mId = miniQueue.front();
+                        miniQueue.dequeue();
+                        EdgeList& mEdges = graph.getDependents(mId);
+                        EdgeNode* mEdge  = mEdges.getHead();
+                        while (mEdge) {
+                            long long mDepId = mEdge->dependentId;
+                            if (!failedSet.contains(mDepId)) {
+                                if (mEdge->absolute) {
+                                    Service& mDep = services[mDepId];
+                                    setServiceStatus(mDepId, STATUS_FAILED);
+                                    float n = (float)mDep.getTotalWeight()
+                                              - mDep.getTotalFailedWeight();
+                                    if (n > 0.0f) mDep.addFailedWeight(n);
+                                    failedSet.insert(mDepId);
+                                    miniQueue.enqueue(mDepId);
+                                } else {
+                                    propagateWeightToDependent(mId, mDepId,
+                                                               mEdge->weight);
+                                    int ms = evaluateService(mDepId);
+                                    if (ms == STATUS_FAILED) {
+                                        Service& mDep = services[mDepId];
+                                        setServiceStatus(mDepId, STATUS_FAILED);
+                                        float n = (float)mDep.getTotalWeight()
+                                                  - mDep.getTotalFailedWeight();
+                                        if (n > 0.0f) mDep.addFailedWeight(n);
+                                        failedSet.insert(mDepId);
+                                        miniQueue.enqueue(mDepId);
+                                    } else if (ms == STATUS_AFFECTED) {
+                                        setServiceStatus(mDepId, STATUS_AFFECTED);
+                                    }
+                                }
+                            }
+                            mEdge = mEdge->next;
+                        }
+                        services[mId].updateHistoricRatio();
+                    }
+
+                    std::cout << "  [P2] " << dep.getName()
+                              << " (ID " << depId << ") -> FAILED\n";
+
+                } else if (newStatus == STATUS_AFFECTED &&
+                           services[depId].getStatus() != STATUS_AFFECTED) {
+                    setServiceStatus(depId, STATUS_AFFECTED);
+                    std::cout << "  [P2] " << services[depId].getName()
+                              << " (ID " << depId << ") -> AFFECTED\n";
+                }
+            }
+
+            edge = edge->next;
+        }
+
+        services[affId].updateHistoricRatio();
     }
 
     std::cout << "=== Simulation complete ===\n\n";
 }
 
 // =============================================================================
-// resetSimulation
+// resetSimulation - O(V) pass restores everything and rebuilds status lists
 // =============================================================================
-
 void ServiceManager::resetSimulation() {
+    normalList.clear();
+    affectedList.clear();
+    failedList.clear();
+
     for (long long i = 1; i <= serviceCount; i++) {
         services[i].resetForSimulation();
+        normalList.pushFront(i);
     }
+
     failedSet.clear();
     std::cout << "[Reset] All services restored to NORMAL.\n";
 }
@@ -244,32 +344,15 @@ void ServiceManager::resetSimulation() {
 // =============================================================================
 // searchByName
 // =============================================================================
-
-void ServiceManager::searchByName(const std::string& name) const {
+long long ServiceManager::searchByName(const std::string& name) const {
     long long id;
-    if (!nameToId.get(name, id)) {
-        std::cout << "No service found with name '" << name << "'.\n";
-        return;
-    }
-    services[id].printStatus();
-}
-
-// =============================================================================
-// printAll
-// =============================================================================
-
-void ServiceManager::printAll() const {
-    std::cout << "\n--- All Services ---\n";
-    for (long long i = 1; i <= serviceCount; i++) {
-        services[i].printStatus();
-    }
-    std::cout << "--------------------\n";
+    if (!nameToId.get(name, id)) return -1;
+    return id;
 }
 
 // =============================================================================
 // isValidId
 // =============================================================================
-
 bool ServiceManager::isValidId(long long id) const {
     return (id >= 1 && id <= serviceCount);
 }

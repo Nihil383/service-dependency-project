@@ -2,36 +2,51 @@
 #define GRAPH_H
 
 // =============================================================================
-// EdgeList — Singly linked list of directed edges
-// Each node in this list represents one outgoing dependency edge:
-//   parentId --[weight, absolute]--> dependentId
-// This list is stored per-service inside the Graph array.
+// EdgeNode - one outgoing dependency edge stored in an adjacency list
 // =============================================================================
-
 struct EdgeNode {
-    long long dependentId;  // The service that depends on the parent
-    int weight;             // How important this dependency is (used in ratio calc)
-    bool absolute;          // If true, dependent immediately fails when parent fails
+    long long dependentId;  // the service that depends on the parent
+    int       weight;       // importance of this dependency
+    bool      absolute;     // if true, dependent immediately fails when parent fails
     EdgeNode* next;
 
     EdgeNode(long long dep, int w, bool abs)
-        : dependentId(dep), weight(w), absolute(abs), next(nullptr) {
-    }
+        : dependentId(dep), weight(w), absolute(abs), next(nullptr) {}
 };
 
+// =============================================================================
+// EdgeList - singly linked list of EdgeNodes stored per service in the graph
+//
+// moveFrom() is the key addition over the original:
+//   Transfers ownership of this list's heap contents into another EdgeList
+//   by swapping raw pointers, then zeroing out the source. This lets
+//   Vector::moveResize() relocate EdgeLists without copying heap memory,
+//   which would cause double-free crashes since EdgeList has no copy ctor.
+// =============================================================================
 class EdgeList {
 private:
     EdgeNode* head;
-    int listSize;
+    int       listSize;
 
 public:
     EdgeList() : head(nullptr), listSize(0) {}
 
-    ~EdgeList() {
+    ~EdgeList() { clear(); }
+
+    // moveFrom - transfer ownership from other into this, zero out other
+    // Called by Vector::moveResize so resize never copies heap memory
+    void moveFrom(EdgeList& other) {
+        // free anything we currently own
         clear();
+        // steal other's contents
+        head     = other.head;
+        listSize = other.listSize;
+        // zero out source so its destructor is a no-op
+        other.head     = nullptr;
+        other.listSize = 0;
     }
 
-    //insert
+    // push_front - O(1) insert, order in adjacency list doesn't matter
     void push_front(long long dependentId, int weight, bool absolute) {
         EdgeNode* node = new EdgeNode(dependentId, weight, absolute);
         node->next = head;
@@ -39,20 +54,21 @@ public:
         listSize++;
     }
 
-    // getHead — lets Graph and ServiceManager traverse the edge list
-    EdgeNode* getHead() const {
-        return head;
+    // edgeExists - O(degree) duplicate check before inserting
+    // prevents the same edge being added twice from the UI or file
+    bool edgeExists(long long dependentId) const {
+        EdgeNode* curr = head;
+        while (curr) {
+            if (curr->dependentId == dependentId) return true;
+            curr = curr->next;
+        }
+        return false;
     }
 
-    int size() const {
-        return listSize;
-    }
+    EdgeNode* getHead()  const { return head; }
+    int       size()     const { return listSize; }
+    bool      empty()    const { return head == nullptr; }
 
-    bool empty() const {
-        return head == nullptr;
-    }
-
-    // clear — free all nodes
     void clear() {
         while (head) {
             EdgeNode* temp = head;
@@ -64,41 +80,47 @@ public:
 };
 
 // =============================================================================
-// Graph — Directed weighted adjacency list
-// Array index == service ID, so lookup is O(1)
-// Each slot holds an EdgeList of outgoing edges (parent → dependents)
-// Max capacity is fixed at construction time from the input file
+// Graph - directed weighted adjacency list
+//
+// Changed from original:
+//   - adjList is now a Vector (dynamically resizing) instead of a fixed
+//     EdgeList array, so no MAX_SERVICES is needed at construction time.
+//   - addEdge now checks edgeExists() before inserting to prevent duplicate
+//     edges from being created via the UI.
+//   - serviceCount is tracked here so the Vector can grow slot by slot.
+//   - getEdgesFrom() added for save functionality and status-list iteration.
 // =============================================================================
+
+// forward declare Vector so Graph.h doesn't need to include Vector.h
+// (Vector.h includes Graph.h, so including it here would be circular)
+class Vector;
 
 class Graph {
 private:
-    EdgeList* adjList;  // adjList[id] = list of all services that depend on id
-    long long capacity; // max number of services (set at program start)
+    Vector*   adjList;      // dynamically sized, index == service ID
+    long long capacity;     // current allocated size (managed by Vector)
+    long long serviceCount; // number of services registered so far
 
 public:
-    // -------------------------------------------------------------------------
-    // Constructor — allocates array of EdgeLists sized to max+1
-    // (index 0 unused; IDs start at 1)
-    // -------------------------------------------------------------------------
-    Graph(long long maxServices);
-
+    Graph();
     ~Graph();
 
-    // -------------------------------------------------------------------------
-    // addEdge — adds a directed weighted edge: parentId → dependentId
-    //   weight:   importance of this dependency (used in failure ratio calc)
-    //   absolute: if true, dependent immediately fails when parent fails
-    //             regardless of weight ratio
-    // -------------------------------------------------------------------------
-    void addEdge(long long parentId, long long dependentId, int weight, bool absolute);
+    // registerService - called when a new service is added
+    // grows the adjacency list by one slot and returns the new service's index
+    long long registerService();
 
-    // -------------------------------------------------------------------------
-    // getDependents — returns the EdgeList for a given service ID
-    // ServiceManager uses this during BFS to walk all dependents
-    // -------------------------------------------------------------------------
+    // addEdge - adds edge parentId -> dependentId if it doesn't already exist
+    // returns false if the edge already existed (caller can warn the user)
+    bool addEdge(long long parentId, long long dependentId,
+                 int weight, bool absolute);
+
+    // getDependents - mutable ref used by BFS
     EdgeList& getDependents(long long id);
 
-    long long getCapacity() const { return capacity; }
+    // getEdgesFrom - const ref used by save and UI read paths
+    const EdgeList& getEdgesFrom(long long id) const;
+
+    long long getServiceCount() const { return serviceCount; }
 };
 
 #endif

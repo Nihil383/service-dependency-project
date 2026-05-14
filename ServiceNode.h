@@ -7,61 +7,65 @@
 #include <QString>
 #include <QList>
 
-class EdgeLine;  // forward declare to avoid circular include
+class EdgeLine;
 
 // =============================================================================
-// ServiceNode — one draggable circle on the canvas representing a service
+// ServiceNode - draggable circle on the canvas representing one service
 //
-// Inherits QObject (for signals) and QGraphicsEllipseItem (for the scene).
-// Stores the service's ID so MainWindow can call back into ServiceManager.
-//
-// Status colors:
-//   Normal   → blue   (#4A90D9)
-//   Affected → yellow (#F5A623)
-//   Failed   → red    (#D0021B)
+// Changes from original:
+//   - selfWeightLabel: small text inside the node showing the self-resilience
+//     weight when a self-edge exists (e.g. "o3" for self-weight 3).
+//     Updated by setSelfWeight() called from MainWindow when a self-edge
+//     is added via addEdge(id, id, w, false).
+//   - mousePressEvent: left click pops up a summary of the service's current
+//     failed weight vs total weight so the user can see the load at a glance.
 // =============================================================================
 class ServiceNode : public QObject, public QGraphicsEllipseItem {
     Q_OBJECT
 
 public:
-    // node diameter in pixels
     static const int DIAMETER = 80;
 
-    ServiceNode(long long serviceId, const QString& name, QGraphicsItem* parent = nullptr);
+    ServiceNode(long long serviceId, const QString& name,
+                QGraphicsItem* parent = nullptr);
 
-    // -----------------------------------------------------------------------
-    // setStatus — called after a simulation run to recolor the node
-    //   0 = normal, 1 = affected, 2 = failed
-    // -----------------------------------------------------------------------
+    // setStatus - recolor the node based on simulation result
+    // 0=normal(blue), 1=affected(yellow), 2=failed(red)
     void setStatus(int status);
 
-    // -----------------------------------------------------------------------
-    // registerEdge / unregisterEdge — EdgeLine calls these so the node
-    // knows which lines to reposition when it is dragged
-    // -----------------------------------------------------------------------
+    // setSelfWeight - show self-resilience weight inside the node
+    // called when a self-edge is added for this service
+    void setSelfWeight(int weight);
+
+    // updateWeightDisplay - refresh the click-summary data
+    // called by MainWindow after each simulation step
+    void updateWeightDisplay(float failedWeight, int totalWeight);
+
     void registerEdge(EdgeLine* edge);
     void unregisterEdge(EdgeLine* edge);
 
-    long long getServiceId() const { return serviceId; }
-    QString   getName()      const { return nameLabel->toPlainText(); }
+    long long getId()   const { return serviceId; }
+    QString   getName() const { return nameLabel->toPlainText(); }
 
 signals:
-    // emitted from the right click menu — MainWindow connects to these
     void requestAddDependent(long long parentId);
     void requestLinkExisting(long long parentId);
     void requestSimulateFailure(long long serviceId);
 
 protected:
-    // right click menu
     void contextMenuEvent(QGraphicsSceneContextMenuEvent* event) override;
-
-    // reposition all attached edges whenever this node moves
-    QVariant itemChange(GraphicsItemChange change, const QVariant& value) override;
+    QVariant itemChange(GraphicsItemChange change,
+                        const QVariant& value) override;
 
 private:
     long long           serviceId;
     QGraphicsTextItem*  nameLabel;
-    QList<EdgeLine*>    edges;      // all edges touching this node
+    QGraphicsTextItem*  selfWeightLabel;  // shows "o<w>" for self-edges
+    QList<EdgeLine*>    edges;
+
+    // cached weight data for the click summary
+    float failedWeight;
+    int   totalWeight;
 
     void updateColor(int status);
 };

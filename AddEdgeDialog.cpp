@@ -4,39 +4,43 @@
 #include <QFormLayout>
 #include <QLabel>
 #include <QPushButton>
+#include <QButtonGroup>
 
-AddEdgeDialog::AddEdgeDialog(const QList<QPair<long long, QString>>& services,
-                             long long excludeId,
-                             QWidget* parent)
+AddEdgeDialog::AddEdgeDialog(QWidget* parent)
     : QDialog(parent)
 {
     setWindowTitle("Link to Existing Service");
     setMinimumWidth(300);
 
     QVBoxLayout* layout = new QVBoxLayout(this);
-    QFormLayout* form   = new QFormLayout();
 
-    // --- service dropdown ---
-    serviceCombo = new QComboBox(this);
-    for (const auto& pair : services) {
-        if (pair.first == excludeId) continue; // don't show the source node
-        serviceCombo->addItem(
-            QString("[%1] %2").arg(pair.first).arg(pair.second)
-        );
-        idList.append(pair.first);
-    }
-    form->addRow("Dependent service:", serviceCombo);
+    // --- selection mode ---
+    QHBoxLayout* modeRow = new QHBoxLayout();
+    byIdRadio   = new QRadioButton("By ID",   this);
+    byNameRadio = new QRadioButton("By Name", this);
+    byIdRadio->setChecked(true);
+    QButtonGroup* group = new QButtonGroup(this);
+    group->addButton(byIdRadio);
+    group->addButton(byNameRadio);
+    modeRow->addWidget(new QLabel("Select by:"));
+    modeRow->addWidget(byIdRadio);
+    modeRow->addWidget(byNameRadio);
+    modeRow->addStretch();
+    layout->addLayout(modeRow);
 
-    // --- weight spinbox ---
+    // --- target input ---
+    QFormLayout* form = new QFormLayout();
+    targetEdit = new QLineEdit(this);
+    targetEdit->setPlaceholderText("Enter ID or name...");
+    form->addRow("Target service:", targetEdit);
+
     weightSpin = new QSpinBox(this);
     weightSpin->setRange(1, 100);
     weightSpin->setValue(1);
     form->addRow("Edge weight:", weightSpin);
 
-    // --- absolute checkbox ---
     absoluteCheck = new QCheckBox("Absolute (dependent immediately fails)", this);
     form->addRow("", absoluteCheck);
-
     layout->addLayout(form);
 
     // --- buttons ---
@@ -50,12 +54,21 @@ AddEdgeDialog::AddEdgeDialog(const QList<QPair<long long, QString>>& services,
 
     connect(ok,     &QPushButton::clicked, this, &QDialog::accept);
     connect(cancel, &QPushButton::clicked, this, &QDialog::reject);
+    connect(targetEdit, &QLineEdit::returnPressed, this, &QDialog::accept);
+}
+
+bool AddEdgeDialog::isByName() const {
+    return byNameRadio->isChecked();
 }
 
 long long AddEdgeDialog::getTargetId() const {
-    int idx = serviceCombo->currentIndex();
-    if (idx < 0 || idx >= idList.size()) return -1;
-    return idList[idx];
+    bool ok;
+    long long id = (long long)targetEdit->text().trimmed().toLongLong(&ok);
+    return ok ? id : -1;
+}
+
+QString AddEdgeDialog::getTargetName() const {
+    return targetEdit->text().trimmed();
 }
 
 int AddEdgeDialog::getWeight() const {

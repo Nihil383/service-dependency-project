@@ -2,42 +2,39 @@
 #define ADDEDGEDIALOG_H
 
 #include <QDialog>
-#include <QComboBox>
+#include <QRadioButton>
+#include <QLineEdit>
 #include <QSpinBox>
 #include <QCheckBox>
-#include <QStringList>
 
 // =============================================================================
-// AddEdgeDialog — dialog for adding an edge between two existing services
+// AddEdgeDialog - collects info to link two existing services
 //
-// Used when: "Link to existing service" is chosen from a node's right click menu
-//
-// Collects:
-//   targetId  — the ID of the service to link to (chosen from a dropdown)
-//   weight    — edge weight (spinbox, 1–100)
-//   absolute  — whether the edge is absolute (checkbox)
+// Changed from original:
+//   Replaced the QComboBox dropdown with a radio button pair (By ID / By Name)
+//   and a single QLineEdit. The user types the target service's ID or name
+//   directly, which is more usable when the graph gets large.
 // =============================================================================
 class AddEdgeDialog : public QDialog {
     Q_OBJECT
 
 public:
-    // serviceNames is a list of "ID: Name" strings for the dropdown
-    // excludeId is the node that was right-clicked — excluded from the list
-    explicit AddEdgeDialog(const QList<QPair<long long, QString>>& services,
-                           long long excludeId,
-                           QWidget* parent = nullptr);
+    explicit AddEdgeDialog(QWidget* parent = nullptr);
 
-    long long getTargetId() const;
-    int       getWeight()   const;
-    bool      getAbsolute() const;
+    // returns typed ID (if By ID selected) or -1 if By Name
+    // call getTargetName() in that case and resolve via ServiceManager
+    bool      isByName()      const;
+    long long getTargetId()   const;
+    QString   getTargetName() const;
+    int       getWeight()     const;
+    bool      getAbsolute()   const;
 
 private:
-    QComboBox* serviceCombo;
-    QSpinBox*  weightSpin;
-    QCheckBox* absoluteCheck;
-
-    // parallel list to combo so we can map selection index → service ID
-    QList<long long> idList;
+    QRadioButton* byIdRadio;
+    QRadioButton* byNameRadio;
+    QLineEdit*    targetEdit;
+    QSpinBox*     weightSpin;
+    QCheckBox*    absoluteCheck;
 };
 
 #endif

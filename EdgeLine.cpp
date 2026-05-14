@@ -1,6 +1,7 @@
 #include "EdgeLine.h"
 #include "ServiceNode.h"
 #include <QGraphicsPolygonItem>
+#include <QGraphicsScene>
 #include <QPolygonF>
 #include <QPen>
 #include <QBrush>
@@ -52,6 +53,8 @@ EdgeLine::~EdgeLine() {
 //              update weight label and arrowhead
 // -----------------------------------------------------------------------
 void EdgeLine::reposition() {
+    prepareGeometryChange(); // tell Qt the full dirty region is changing
+
     int r = ServiceNode::DIAMETER / 2;
 
     // center of each node in scene coordinates
@@ -84,4 +87,5 @@ void EdgeLine::reposition() {
     QPolygonF poly;
     poly << tip << left << right;
     arrowHead->setPolygon(poly);
+    if (scene()) scene()->update();
 }

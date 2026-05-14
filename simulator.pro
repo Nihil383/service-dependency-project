@@ -2,23 +2,15 @@ QT += core gui widgets
 
 CONFIG += c++17
 
-TARGET = simulator
+TARGET   = simulator
 TEMPLATE = app
 
-# -----------------------------------------------------------------------
-# Your existing logic files — untouched
-# -----------------------------------------------------------------------
 SOURCES += \
     graph.cpp \
     HashMap.cpp \
     LinkedList.cpp \
     Service.cpp \
     ServiceManager.cpp \
-
-# -----------------------------------------------------------------------
-# Qt UI layer
-# -----------------------------------------------------------------------
-SOURCES += \
     main.cpp \
     MainWindow.cpp \
     ServiceNode.cpp \
@@ -28,6 +20,7 @@ SOURCES += \
 
 HEADERS += \
     graph.h \
+    Vector.h \
     HashMap.h \
     LinkedList.h \
     Queue.h \
